@@ -1,0 +1,31 @@
+name: downloader-myversion
+
+services:
+  app:
+    container_name: video-downloader
+    build: .
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env}
+    command: [serve]
+    environment:
+      DOWNLOAD_DIR: /data/downloads
+      HTTP_ADDR: :8085
+      YOUTUBE_COOKIES_BROWSER: ""
+    ports:
+      - "${HTTP_PORT:-8085}:8085"
+    volumes:
+      - downloads:/data/downloads
+      - ./secrets:/run/downloader-secrets:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - existing-tools
+    stop_grace_period: 30s
+
+volumes:
+  downloads:
+
+networks:
+  existing-tools:
+    external: true
+    name: tool_default

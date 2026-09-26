@@ -1,0 +1,7 @@
+.env
+downloads/
+video-test/
+bin/
+coverage.out
+secrets/*
+!secrets/.gitkeep
