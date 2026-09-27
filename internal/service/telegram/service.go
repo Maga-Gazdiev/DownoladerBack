@@ -86,10 +86,12 @@ func (s *Download) Process(ctx context.Context, job model.DownloadJob) error {
 		return err
 	}
 	if !found {
+		slog.Info("telegram download started", "job_id", job.ID)
 		file, err = s.downloader.Download(ctx, job.URL, dir)
 		if err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
+		slog.Info("telegram download prepared", "job_id", job.ID)
 		if err = s.files.Remember(job.ID, file); err != nil {
 			return err
 		}

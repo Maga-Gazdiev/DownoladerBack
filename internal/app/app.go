@@ -62,11 +62,12 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	gate := download.NewGate()
 	prepared := download.NewPrepared(source, ffmpeg.NewMP4(command.Exec{}, cfg.MaxUploadBytes))
-	downloadService := telegramservice.NewDownload(prepared, broker, store)
+	downloadService := telegramservice.NewDownload(gate.Wrap(prepared), broker, store)
 	client := telegram.New(cfg.Token, cfg.TelegramURL, &http.Client{Timeout: cfg.SendTimeout}, cfg.MaxUploadBytes)
 	sendService := telegramservice.NewSend(client, store)
-	webService := web.NewWeb(broker, webStore, source, cfg.WebTTL)
+	webService := web.NewWeb(broker, webStore, gate.Wrap(source), cfg.WebTTL)
 	webhook := telegramhandler.NewWebhook(telegramservice.NewWebhook(broker), cfg.Secret)
 	webAPI := api.NewWebAPI(webService, cfg.WebToken)
 

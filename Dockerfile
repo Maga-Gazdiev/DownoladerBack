@@ -18,5 +18,7 @@ COPY --from=build /out/downloader /usr/local/bin/downloader
 USER downloader
 WORKDIR /data
 ENV DOWNLOAD_DIR=/data/downloads YOUTUBE_COOKIES_BROWSER="" GOSTREAMPULLER_NO_AUTO_INSTALL=1
+# The Go process shares Render Free's 512 MiB with yt-dlp and FFmpeg.
+ENV GOMEMLIMIT=160MiB GOGC=50
 ENTRYPOINT ["downloader"]
 CMD ["serve"]

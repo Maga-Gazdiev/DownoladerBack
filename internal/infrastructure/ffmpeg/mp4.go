@@ -24,10 +24,10 @@ func NewMP4(r Runner, maxBytes int64) *MP4 {
 
 func (d *MP4) Convert(ctx context.Context, input, output string) error {
 	// Re-encode even MP4 inputs: their codecs may be VP9/AV1/Opus.
-	err := d.runner.Run(ctx, "ffmpeg", "-nostdin", "-y", "-i", input,
+	err := d.runner.Run(ctx, "ffmpeg", "-nostdin", "-y", "-filter_threads", "1", "-threads:v", "1", "-i", input,
 		"-map", "0:v:0", "-map", "0:a:0?",
-		"-c:v", "libx264", "-preset", "fast", "-crf", "23",
-		"-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-pix_fmt", "yuv420p",
+		"-c:v", "libx264", "-threads:v", "1", "-preset", "fast", "-crf", "23",
+		"-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", "-pix_fmt", "yuv420p",
 		"-c:a", "aac", "-b:a", "128k", "-ac", "2",
 		"-movflags", "+faststart", output)
 	if err != nil {
@@ -82,7 +82,7 @@ func (d *MP4) duration(ctx context.Context, path string) (float64, error) {
 }
 
 func (d *MP4) encodeTwoPass(ctx context.Context, input, output, stage string, bitrate int64) error {
-	base := []string{"-nostdin", "-y", "-i", input, "-map", "0:v:0", "-c:v", "libx264", "-preset", "fast",
+	base := []string{"-nostdin", "-y", "-filter_threads", "1", "-threads:v", "1", "-i", input, "-map", "0:v:0", "-c:v", "libx264", "-threads:v", "1", "-preset", "fast",
 		"-b:v", strconv.FormatInt(bitrate, 10), "-vf", "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", "-pix_fmt", "yuv420p",
 		"-passlogfile", filepath.Join(stage, "encode-pass")}
 	first := append(append([]string{}, base...), "-pass", "1", "-an", "-f", "null", os.DevNull)

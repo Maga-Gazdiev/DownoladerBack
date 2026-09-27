@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -29,10 +30,12 @@ func (d *Prepared) Download(ctx context.Context, url, dir string) (model.File, e
 		if err != nil {
 			return err
 		}
+		slog.Info("telegram source downloaded", "file_hash", file.Hash)
 		input := filepath.Join(stage, file.Name)
 		if err := d.converter.Convert(ctx, input, filepath.Join(stage, "telegram.mp4")); err != nil {
 			return err
 		}
+		slog.Info("telegram video converted", "file_hash", file.Hash)
 		return os.Remove(input)
 	})
 }

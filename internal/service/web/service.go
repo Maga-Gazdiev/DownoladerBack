@@ -98,6 +98,7 @@ func (s *Web) Process(ctx context.Context, message struct {
 	if err := s.jobs.Save(ctx, job); err != nil {
 		return err
 	}
+	slog.Info("web download started", "job_id", job.ID, "platform", job.Platform)
 	file, downloadErr := s.downloader.Download(ctx, job.URL, dir)
 	if downloadErr != nil {
 		slog.Warn("web download failed", "job_id", job.ID, "platform", job.Platform, "reason", downloadFailureCode(downloadErr))
@@ -130,6 +131,7 @@ func (s *Web) Process(ctx context.Context, message struct {
 	if size == 0 {
 		return fmt.Errorf("empty downloaded file")
 	}
+	slog.Info("web video uploaded", "job_id", job.ID, "size", size)
 	job.Status = "ready"
 	job.File = file
 	job.Size = size

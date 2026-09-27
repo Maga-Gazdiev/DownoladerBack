@@ -43,7 +43,7 @@ func (d *Downloader) Download(ctx context.Context, rawURL, dir string) (model.Fi
 		if d.native {
 			return d.runner.Run(ctx, d.binary, "__gostreampuller", rawURL, stage)
 		}
-		args := []string{"--ignore-config", "--no-playlist", "-N", "16", "-o", filepath.Join(stage, "video.%(ext)s")}
+		args := []string{"--ignore-config", "--no-playlist", "-N", "2", "-o", filepath.Join(stage, "video.%(ext)s")}
 		platform, err := video.Detect(rawURL)
 		if err != nil {
 			return apperrors.Permanent(err)
