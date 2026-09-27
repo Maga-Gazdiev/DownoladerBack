@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"time"
 
@@ -99,6 +100,7 @@ func (s *Web) Process(ctx context.Context, message struct {
 	}
 	file, downloadErr := s.downloader.Download(ctx, job.URL, dir)
 	if downloadErr != nil {
+		slog.Warn("web download failed", "job_id", job.ID, "platform", job.Platform, "reason", downloadFailureCode(downloadErr))
 		job.Status = "failed"
 		job.Error = "Не удалось скачать видео. Проверьте доступность ссылки и попробуйте ещё раз."
 		if errors.Is(downloadErr, apperrors.ErrAuthentication) {

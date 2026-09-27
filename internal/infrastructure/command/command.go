@@ -2,13 +2,9 @@ package command
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os/exec"
-	"strings"
 	"time"
-
-	apperrors "video-downloader/internal/errors"
 )
 
 type Exec struct{}
@@ -36,11 +32,7 @@ func execute(ctx context.Context, stdout io.Writer, binary string, args ...strin
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		message := strings.ToLower(string(diagnostic.data))
-		if strings.Contains(message, "sign in to confirm") || strings.Contains(message, "login required") || strings.Contains(message, "use --cookies") {
-			return apperrors.Permanent(apperrors.ErrAuthentication)
-		}
-		return fmt.Errorf("%s failed: %w", binary, err)
+		return failure(binary, err, diagnostic.data)
 	}
 	return nil
 }
