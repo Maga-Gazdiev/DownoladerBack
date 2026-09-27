@@ -8,9 +8,6 @@ services:
     command: [serve]
     environment:
       HTTP_ADDR: :8085
-      YOUTUBE_COOKIES_BROWSER: ""
     ports:
       - "${HTTP_PORT:-8085}:8085"
-    volumes:
-      - ./secrets:/run/downloader-secrets:ro
     stop_grace_period: 30s

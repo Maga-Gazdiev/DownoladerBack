@@ -9,14 +9,14 @@ import (
 
 type Config struct {
 	Token, Secret, WebToken, HTTPAddr, TelegramURL string
-	YTDLP, CookiesBrowser, CookiesFile             string
+	YTDLP, POTProviderHome                         string
 	Concurrency, MaxJobs                           int
 	MaxUploadBytes, MemoryBytes                    int64
 	JobTimeout, SendTimeout, WebTTL                time.Duration
 }
 
 func Load() (Config, error) {
-	c := Config{Token: os.Getenv("TELEGRAM_BOT_TOKEN"), Secret: os.Getenv("TELEGRAM_WEBHOOK_SECRET"), WebToken: os.Getenv("WEB_API_TOKEN"), HTTPAddr: value("HTTP_ADDR", ":8085"), TelegramURL: value("TELEGRAM_API_URL", "https://api.telegram.org"), YTDLP: value("YT_DLP_BIN", "yt-dlp"), CookiesBrowser: os.Getenv("YOUTUBE_COOKIES_BROWSER"), CookiesFile: os.Getenv("YOUTUBE_COOKIES_FILE")}
+	c := Config{Token: os.Getenv("TELEGRAM_BOT_TOKEN"), Secret: os.Getenv("TELEGRAM_WEBHOOK_SECRET"), WebToken: os.Getenv("WEB_API_TOKEN"), HTTPAddr: value("HTTP_ADDR", ":8085"), TelegramURL: value("TELEGRAM_API_URL", "https://api.telegram.org"), YTDLP: value("YT_DLP_BIN", "yt-dlp"), POTProviderHome: value("YOUTUBE_PO_TOKEN_HOME", "/opt/bgutil/server")}
 	var err error
 	n, err := positive("MAX_CONCURRENT_DOWNLOADS", "2")
 	if err != nil {

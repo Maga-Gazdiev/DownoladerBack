@@ -66,7 +66,7 @@ func TestStreamIntegration(t *testing.T) {
 		shellArgs := []string{"-c", `cd "$1" && shift && exec "$@"`, "integration", dir, binary}
 		return (command.Exec{}).Stream(ctx, w, "sh", append(shellArgs, args...)...)
 	})
-	d := New(runner, binary, "", "", 1<<20, 1<<20)
+	d := New(runner, binary, "", 1<<20, 1<<20)
 	media, err := d.Download(ctx, "https://youtu.be/test")
 	if err != nil {
 		t.Fatal(err)

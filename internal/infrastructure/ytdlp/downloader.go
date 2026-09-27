@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"os"
 	"sync"
 
 	apperrors "video-downloader/internal/errors"
@@ -20,13 +19,13 @@ type Runner interface {
 }
 type Downloader struct {
 	runner                      Runner
-	binary, browser, cookies    string
+	binary, providerURL         string
 	maxBytes, memoryBytes, used int64
 	mu                          sync.Mutex
 }
 
-func New(r Runner, binary, browser, cookies string, maxBytes, memoryBytes int64) *Downloader {
-	return &Downloader{runner: r, binary: binary, browser: browser, cookies: cookies, maxBytes: maxBytes, memoryBytes: memoryBytes}
+func New(r Runner, binary, providerURL string, maxBytes, memoryBytes int64) *Downloader {
+	return &Downloader{runner: r, binary: binary, providerURL: providerURL, maxBytes: maxBytes, memoryBytes: memoryBytes}
 }
 func (d *Downloader) Download(ctx context.Context, raw string) (*model.Media, error) {
 	platform, err := model.DetectPlatform(raw)
@@ -59,19 +58,13 @@ func (d *Downloader) Download(ctx context.Context, raw string) (*model.Media, er
 	format := "bestvideo[ext=mp4][vcodec^=avc1]" + protocol + "+bestaudio[ext=m4a]" + protocol + "/best[ext=mp4]" + protocol
 	args := []string{"--ignore-config", "--no-playlist", "--playlist-items", "1", "--no-cache-dir", "--no-part", "--no-progress", "--no-simulate", "--downloader", "ffmpeg", "--downloader-args", "ffmpeg_o:-f mp4 -movflags +frag_keyframe+empty_moov+default_base_moof", "-f", format, "-o", "-"}
 	if platform == model.YouTube {
-		args = append(args, "--js-runtimes", "node")
-		if d.cookies != "" {
-			// yt-dlp updates its cookie jar on exit; leave the mounted source intact.
-			cookies, err := copyCookies(d.cookies)
-			if err != nil {
-				return nil, err
-			}
-			defer os.Remove(cookies)
-			args = append(args, "--cookies", cookies)
-		} else if d.browser != "" {
-			args = append(args, "--cookies-from-browser", d.browser)
+		args = append(args, "--js-runtimes", "node", "--no-cookies", "--no-cookies-from-browser",
+			"--extractor-args", "youtube:player_client=mweb")
+		if d.providerURL != "" {
+			args = append(args, "--extractor-args", "youtubepot-bgutilhttp:base_url="+d.providerURL)
 		}
 	}
+
 	args = append(args, "--", raw)
 	err = d.runner.Stream(ctx, output, d.binary, args...)
 	if output.overflow {
@@ -111,24 +104,4 @@ func (b *buffer) Write(p []byte) (int, error) {
 	}
 	b.data = append(b.data, p...)
 	return len(p), nil
-}
-
-// Only credentials use a temporary file; video bytes always travel through pipes.
-func copyCookies(path string) (string, error) {
-	source, err := os.Open(path)
-	if err != nil {
-		return "", errors.New("cannot open cookies file")
-	}
-	defer source.Close()
-	target, err := os.CreateTemp("", "downloader-cookies-*")
-	if err != nil {
-		return "", err
-	}
-	n, err := io.Copy(target, io.LimitReader(source, (5<<20)+1))
-	closeErr := target.Close()
-	if err != nil || closeErr != nil || n > 5<<20 {
-		os.Remove(target.Name())
-		return "", errors.New("cannot copy cookies file (maximum 5 MiB)")
-	}
-	return target.Name(), nil
 }

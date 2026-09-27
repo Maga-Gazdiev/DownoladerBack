@@ -70,7 +70,7 @@ func (s *Service) process(ctx context.Context, id, raw string) {
 		e.job.Status = "failed"
 		e.job.Error = "Не удалось скачать видео. Проверьте доступность ссылки и попробуйте ещё раз."
 		if errors.Is(err, apperrors.ErrAuthentication) {
-			e.job.Error = "Источник требует авторизацию. Проверьте cookies на сервере."
+			e.job.Error = "YouTube отклонил анонимный запрос или видео требует входа в аккаунт."
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			e.job.Error = "Превышено время скачивания. Попробуйте более короткое видео."

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	apperrors "video-downloader/internal/errors"
@@ -18,7 +19,7 @@ func TestMemoryRemainsReservedForOpenReaders(t *testing.T) {
 	d := New(runnerFunc(func(_ context.Context, w io.Writer, _ string, _ ...string) error {
 		_, err := w.Write([]byte("video"))
 		return err
-	}), "yt-dlp", "", "", 8, 8)
+	}), "yt-dlp", "", 8, 8)
 	media, err := d.Download(context.Background(), "https://youtu.be/test")
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +58,7 @@ func TestOverflowCancelsProcessAndReleasesReservation(t *testing.T) {
 		}
 		_, err := w.Write([]byte("ok"))
 		return err
-	}), "yt-dlp", "", "", 4, 4)
+	}), "yt-dlp", "", 4, 4)
 	if _, err := d.Download(context.Background(), "https://youtu.be/test"); !errors.Is(err, ErrTooLarge) {
 		t.Fatal(err)
 	}
@@ -69,11 +70,39 @@ func TestOverflowCancelsProcessAndReleasesReservation(t *testing.T) {
 }
 func TestFailureReleasesReservation(t *testing.T) {
 	for _, downloadErr := range []error{errors.New("failed"), context.DeadlineExceeded, nil} {
-		d := New(runnerFunc(func(context.Context, io.Writer, string, ...string) error { return downloadErr }), "yt-dlp", "", "", 4, 4)
+		d := New(runnerFunc(func(context.Context, io.Writer, string, ...string) error { return downloadErr }), "yt-dlp", "", 4, 4)
 		for range 2 {
 			if _, err := d.Download(context.Background(), "https://youtu.be/test"); err == nil || errors.Is(err, apperrors.ErrBusy) {
 				t.Fatalf("empty/failed download: %v", err)
 			}
 		}
+	}
+}
+
+func TestYouTubeUsesAnonymousProvider(t *testing.T) {
+	for _, raw := range []string{"https://youtu.be/test", "https://www.tiktok.com/@test/video/123"} {
+		t.Run(raw, func(t *testing.T) {
+			d := New(runnerFunc(func(_ context.Context, w io.Writer, _ string, args ...string) error {
+				joined := strings.Join(args, " ")
+				youtube := strings.Contains(raw, "youtu.be")
+				for _, arg := range []string{"youtube:player_client=mweb", "youtubepot-bgutilhttp:base_url=http://127.0.0.1:12345", "--no-cookies", "--no-cookies-from-browser"} {
+					if strings.Contains(joined, arg) != youtube {
+						t.Errorf("unexpected platform options: %s", joined)
+					}
+				}
+				for _, arg := range args {
+					if arg == "--cookies" || arg == "--cookies-from-browser" {
+						t.Fatal("account cookies enabled")
+					}
+				}
+				_, err := io.WriteString(w, "video")
+				return err
+			}), "yt-dlp", "http://127.0.0.1:12345", 10, 10)
+			media, err := d.Download(context.Background(), raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			media.Close()
+		})
 	}
 }
