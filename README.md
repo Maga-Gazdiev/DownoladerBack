@@ -1,143 +1,104 @@
 # Video downloader
 
-Один backend-процесс и контейнер `video-downloader`: HTTP webhook, HTTP API и три consumer’а RabbitMQ запускаются вместе. PostgreSQL не используется.
+Один Go-процесс: HTTP API, Telegram webhook и конкурентная обработка видео в goroutine. RabbitMQ, S3/B2, файлового хранилища, очередей и отдельных воркеров нет.
 
 ```text
-POST /webhook       → video.download → Telegram download handler → telegram.send → Telegram
-POST /api/downloads → web.download   → Web download handler       → файл для HTTP-скачивания
+POST /api/downloads → goroutine → yt-dlp + FFmpeg → буфер в RAM → GET .../file
+POST /webhook       → goroutine → yt-dlp + FFmpeg → буфер в RAM → Telegram
 ```
 
-Имена очередей дополняются `QUEUE_PREFIX` (в текущем окружении `myversion.`). HTTP принимает запрос, проверяет его и подтверждает постановку в RabbitMQ. Скачивание выполняется consumer’ами. Чтение статуса, готового файла и health check выполняются непосредственно через HTTP.
-
-## Запуск
-
-```sh
-make init       # создаёт .env из примера только при отсутствии
-# Заполнить .env
-make up         # сборка и запуск одного backend-контейнера
-make logs
-make health
-```
-
-`docker-compose.yml` подключается к существующей сети `tool_default`; адрес RabbitMQ задаётся только через `RABBIT_AMQP_URL`. Новые RabbitMQ/PostgreSQL не создаются. Проект Compose и volume downloads сохранены; `make up` удаляет старые контейнеры отдельных worker’ов этого проекта, сохраняя данные.
-
-HTTP слушает `:8085` внутри контейнера, порт хоста задаётся `HTTP_PORT`. CloudPub должен проксировать `http://localhost:8085`.
-
-```sh
-make webhook-set WEBHOOK_URL=https://searchingly-encouraged-topi.cloudpub.ru/webhook
-make webhook-info
-make webhook-delete
-make ps
-make restart
-make down
-```
-
-Регистрация webhook выполняется явно. Скрипт использует секреты из `.env`, проверяет ответ Telegram и не сбрасывает ожидающие updates. Для скрипта нужны curl и python3. `make restart` перезапускает текущий контейнер; после изменения env или кода используйте `make up`.
-
-Frontend остаётся в соседнем проекте `../DownloaderPRMYVERSIONFront`, доступен на порту 3001:
-```sh
-make front-up
-make front-logs
-make front-down
-```
-
-## Локальный запуск
-
-Нужны Go 1.25.5, Node.js 22, FFmpeg/ffprobe, yt-dlp с EJS и gallery-dl.
-В локальном env укажите `RABBIT_AMQP_URL` с адресом, доступным с вашей машины, `DOWNLOAD_DIR=./downloads`, `HTTP_ADDR=:8085`. Для контейнера адрес в URL должен быть доступен из Docker-сети.
-`make run` экспортирует значения из `.env` и запускает все компоненты; другой env можно выбрать через `ENV_FILE`.
-```sh
-make deps
-make run
-# Прямое скачивание без очереди:
-go run -buildvcs=false ./cmd/app 'https://www.youtube.com/watch?v=VIDEO_ID' ./downloads
-```
-
-Запуск бинарника без аргументов эквивалентен `downloader serve`. CLI с URL печатает JSON с `hash` и `name`.
+yt-dlp получает ссылки на дорожки, FFmpeg передаёт MP4 через stdout. Видео, фрагменты и результаты обработки не записываются на диск. Звук и видео объединяются в потоковый MP4 без перекодирования. Выбираются H.264 + M4A либо готовый MP4; поддерживаются прямые HTTP(S) и HLS-потоки. Если подходящего формата нет, задача завершается ошибкой. Это не универсальный конвертер кодеков.
 
 ## Структура
 
 ```text
-cmd/app/main.go                   точка входа, сигналы ОС
-internal/app                     app.go, routes.go, http.go, download.go, cli.go
-internal/config                  environment variables
-internal/errors                  классификация ошибок
-internal/worker                  периодическая очистка файлов
-internal/handler/
-  telegram/                      Telegram webhook
-  api/                           HTTP API
-  queue/                         декодирование сообщений RabbitMQ
-internal/service/
-  model/                         структуры задач, файлов и названия очередей
-  video/                         определение платформы и извлечение URL
-  telegram/                      постановка, скачивание и отправка Telegram
-  web/                           web-задачи и доступ к результату
-  download/                      выбор загрузчика, подготовка MP4
-internal/infrastructure/
-  rabbitmq/ telegram/ backblaze/  внешние API
-  gostreampuller/ gallerydl/      адаптеры загрузчиков
-  ffmpeg/ command/               конвертация и внешние процессы
-internal/storage/
-  files/                         файловое состояние задач и отметки отправки
-  media/                         временные директории, проверка и SHA-256
-scripts/webhook.sh               управление webhook
+internal/
+  handler/
+    api/          HTTP-запросы и ответы веб-API
+    telegram/     приём Telegram webhook
+  service/
+    web/          веб-сервис: создание, статус и выдача задач
+    telegram/     Telegram-сервис: обработка updates и отправка видео
+  infrastructure/
+    ytdlp/        вызов yt-dlp и потокового FFmpeg
+    command/      запуск и отмена внешних процессов
+    telegram/     HTTP-клиент Telegram Bot API
+  model/          общие типы видео, задач и проверка ссылок
+  app/            сборка зависимостей, запуск HTTP/CLI и общий лимит goroutine
+  config/         настройки окружения
+  errors/         общие ошибки
 ```
 
-Интерфейсы объявлены у потребителей; общего пакета interfaces нет. Зависимости внедряются конструкторами. Оба загрузчика реализуют `Download(context.Context, URL, outputDir) (model.File, error)`. Имя результата — `<SHA-256>.<extension>`. Отдельного domain-слоя нет.
+Каждый handler вызывает свой сервис: web или telegram. Каждый сервис находится в своей папке и зависит от интерфейсов; реализации внешних операций находятся в infrastructure. Общий запуск goroutine и завершение задач находятся в `app/concurrency.go` и передаются обоим сервисам через интерфейс `Tasks`. Отдельного пакета или сервиса конкурентности нет. Repository не нужен: постоянного хранения нет, состояние активных задач и временные буферы находятся в памяти процесса.
 
-YouTube/Instagram используют существующий yt-dlp-путь внутри адаптера gostreampuller, TikTok — gallery-dl. `VIDEO_BACKEND=gostreampuller` включает API установленной библиотеки v1.1.0 в отменяемом дочернем процессе. В этом режиме применяются `VIDEO_FORMAT`, `VIDEO_RESOLUTION`, `VIDEO_CODEC`; параметры cookies и `YT_DLP_BIN` относятся к CLI-режиму.
+## Запуск
 
-## HTTP и файлы
-
-- `POST /webhook`: заголовок `X-Telegram-Bot-Api-Secret-Token`.
-- `POST /api/downloads`: JSON `{"url":"https://..."}`, ответ 202 с задачей.
-- `GET /api/downloads/{id}`: состояние задачи.
-- `GET /api/downloads/{id}/file`: готовый файл.
-- `GET /healthz`: доступность HTTP.
-
-API требует `Authorization: Bearer <WEB_API_TOKEN>`. Frontend хранит этот токен на своей серверной стороне.
-
-Для Telegram результат преобразуется в MP4/H.264/AAC с разрешением не выше 720p и отправляется через sendVideo. При превышении `MAX_UPLOAD_BYTES=50000000` применяется двухпроходное сжатие: качество может снизиться. После успешной отправки файл удаляется.
-
-Для Render Free (512 MiB) Docker-образ задаёт `GOMEMLIMIT=160MiB`, FFmpeg работает с одним потоком, yt-dlp скачивает не более двух фрагментов параллельно, а Web и Telegram обрабатывают только одну загрузку/конвертацию за раз. Эти меры снижают пиковое потребление памяти, но не гарантируют обработку любого длинного или 4K-видео на бесплатном тарифе. Ограничение Go не распространяется на дочерние процессы FFmpeg и yt-dlp; значение можно переопределить через Environment в Render.
-
-Web сохраняет исходное качество и контейнер без Telegram-лимита. Файл доступен до `WEB_FILE_TTL` (по умолчанию 24 часа), затем удаляется. Если заданы `B2_ENDPOINT`, `B2_BUCKET`, `KEYID` и `APPLICATIONKEY`, состояние Web-задач и готовые видео хранятся в приватном Backblaze B2 bucket. Загрузчик всё равно временно пишет файл в `DOWNLOAD_DIR` перед отправкой в B2. Без этих переменных сохраняется прежнее локальное хранилище. Завершившаяся ошибка скачивания отображается в статусе; повтор из UI создаёт новую задачу.
-
-Очистка Web-файлов запускается при старте приложения и каждые `CLEANUP_INTERVAL` (по умолчанию 1 минута для локального диска и 30 минут для B2). В режиме B2 удаляются все версии объектов, включая старые версии `job.json`; отдельная настройка lifecycle bucket для этих объектов не требуется. Активные задачи и открытые HTTP-скачивания защищены до завершения обработки/закрытия файла. Очистка завершится вместе с приложением; после простоя просроченные файлы удалятся при следующем старте. Отдельный cron не требуется.
-
-В текущем Docker-окружении файлы расположены так:
-
-- Telegram: `/data/downloads/<job-id>/<hash>.mp4`.
-- Web без B2: `/data/downloads/web/<job-id>/<hash>.<extension>`. С B2 этот путь временный, а состояние и готовый файл находятся в bucket под префиксом `web/`.
-- Volume: `downloader-myversion_downloads`.
-- Путь volume на этом хосте: `/var/lib/docker/volumes/downloader-myversion_downloads/_data`.
-
-При локальном запуске корень задаёт `DOWNLOAD_DIR` (по умолчанию `./downloads`). Compose использует `/data/downloads`. Просроченные Web-файлы удаляются без корзины; при необходимости их нужно скачать повторно. Telegram-файлы неудачных/ожидающих задач автоматически по возрасту не удаляются: на них могут ссылаться retry/DLQ. Для их очистки сначала нужно решить судьбу соответствующих задач. Отметки `.sent` также сохраняются для защиты от повторной отправки.
-
-## Очереди и остановка
-
-Durable queues, persistent messages, publisher confirms, manual ack и prefetch=1. Временные ошибки повторяются до `MAX_RETRIES` через очередь .retry с задержкой 10 секунд; постоянные ошибки и исчерпанные попытки попадают в .dead. Неоднозначная ошибка публикации сохраняет исходную задачу неподтверждённой.
-
-SIGTERM отменяет текущую работу. Прерванные задачи возвращаются RabbitMQ после закрытия канала; HTTP получает до 20 секунд на завершение. Сбой любого consumer’а останавливает всё приложение, которое перезапускает Compose.
-
-Файловый cache и отметки отправки уменьшают повторную работу, но доставка остаётся at-least-once: сбой после принятия файла Telegram может привести к повторной отправке. Запускайте один экземпляр приложения: распределённые блокировки не реализованы. Файлы неудачных Telegram-задач и отметки .sent сохраняются; контролируйте свободное место.
-
-## YouTube cookies
-
-При пустых `YOUTUBE_COOKIES_BROWSER` и `YOUTUBE_COOKIES_FILE` загрузчик работает без cookies. Публичные видео часто доступны; гарантировать все ссылки без авторизации нельзя.
-
-Если YouTube требует вход, экспортируйте cookies YouTube в Netscape-формате из отдельной приватной сессии: после входа откройте в той же вкладке https://www.youtube.com/robots.txt, экспортируйте cookies и закройте сессию. Сохраните файл в `secrets/youtube.txt`, обеспечив чтение пользователю контейнера UID 10001, и задайте:
-```dotenv
-YOUTUBE_COOKIES_FILE=/run/downloader-secrets/youtube.txt
+```sh
+make init
+# Заполните TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, WEB_API_TOKEN в .env.
+make up
+make health
+make logs
 ```
-Примените через `make up`. Cookies и .env не должны попадать в Git.
+
+Compose запускает только приложение; внешняя Docker-сеть и volume для видео не нужны. Порт по умолчанию — 8085. После изменения env или кода выполните `make up`.
+
+Локально нужны Go 1.25.5, yt-dlp с EJS, FFmpeg и Node.js:
+
+```sh
+make run
+# CLI выводит бинарный MP4 в stdout, аргумента output-dir больше нет:
+go run ./cmd/app 'https://www.youtube.com/watch?v=VIDEO_ID' | player -
+```
+
+Для Telegram:
+
+```sh
+make webhook-set WEBHOOK_URL=https://your-host/webhook
+make webhook-info
+```
+
+Frontend находится в соседнем проекте: `make front-up`, `make front-logs`.
+
+## API
+
+Все `/api/` требуют `Authorization: Bearer <WEB_API_TOKEN>`.
+
+- `POST /api/downloads` с JSON `{"url":"https://..."}` возвращает `202` и задачу со статусом `downloading`.
+- `GET /api/downloads/{id}` возвращает статус `downloading`, `ready` или `failed`.
+- `GET /api/downloads/{id}/file` отдаёт MP4 из памяти; Range-запросы поддерживаются.
+- `GET /healthz` проверяет доступность HTTP.
+
+Лимит одновременных задач общий для API и Telegram. Если свободных слотов нет, запрос получает `503`; ожидающей очереди нет. После принятия задача продолжает выполняться независимо от соединения, которым она создана.
+
+## Лимиты и время жизни
+
+| Переменная | По умолчанию | Назначение |
+| --- | --- | --- |
+| `MAX_CONCURRENT_DOWNLOADS` | `2` | Одновременные задачи, включая отправку в Telegram |
+| `MAX_UPLOAD_BYTES` | `50000000` | Максимальный размер одного видео для API и Telegram |
+| `MAX_MEMORY_BYTES` | `200000000` | Общий бюджет буферов видео |
+| `MAX_WEB_JOBS` | `100` | Число веб-задач, включая ошибки |
+| `DOWNLOAD_TIMEOUT` | `20m` | Таймаут загрузки |
+| `SEND_TIMEOUT` | `5m` | Таймаут отправки в Telegram |
+| `WEB_FILE_TTL` | `10m` | Время доступности результата после завершения |
+
+На каждое загружаемое видео резервируется `MAX_UPLOAD_BYTES`. Резерв остаётся за веб-результатом до TTL и закрытия всех открытых читателей. Поэтому число одновременно хранимых видео ограничено отношением `MAX_MEMORY_BYTES / MAX_UPLOAD_BYTES`. При нехватке памяти принятая задача завершается ошибкой. Telegram освобождает буфер после отправки. Таймер каждой веб-задачи удаляет её и освобождает буфер; периодического воркера нет. После удаления API возвращает `404`.
+
+Бюджет относится к видео; Go, yt-dlp, FFmpeg и HTTP требуют дополнительной памяти. Значения выбирайте с учётом RAM контейнера.
+
+Задачи, видео и защита от повторных Telegram updates находятся только в RAM. Перезапуск всё очищает; восстановления и автоматических повторов после ошибок нет. Telegram webhook подтверждается при запуске задачи; последующая ошибка попадает в лог. Повторные updates подавляются во время обработки и час после успешной отправки. При завершении приложения задачи отменяются, subprocess завершаются, приложение ждёт выхода goroutine. Используйте один экземпляр приложения или маршрутизацию запросов к тому же экземпляру.
+
+## Cookies
+
+Без `YOUTUBE_COOKIES_BROWSER` и `YOUTUBE_COOKIES_FILE` загрузка анонимная. При необходимости сохраните Netscape cookies в `secrets/youtube.txt` и задайте `YOUTUBE_COOKIES_FILE=/run/downloader-secrets/youtube.txt`. Файл должен читаться пользователем контейнера UID 10001. Для yt-dlp создаётся отдельная временная копия cookies, удаляемая после задачи; исходный файл остаётся неизменным. Видео во временные файлы не записываются.
 
 ## Проверки
 
 ```sh
-make fmt
 make check
+go test -race ./...
+RUN_MEDIA_INTEGRATION=1 go test ./internal/infrastructure/ytdlp -run TestStreamIntegration
 ```
 
-По запросу все файлы `*_test.go` удалены. `make check` проверяет форматирование, запускает go vet, go test (компиляция пакетов без тестов) и сборку.
-# DownoladerBack
+Тесты проверяют конкурентные лимиты, отмену, ошибки/TTL задач, время жизни буферов и HTTP-выдачу из памяти. Реальные загрузки зависят от доступности источника и cookies.

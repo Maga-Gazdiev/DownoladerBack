@@ -2,6 +2,8 @@ package errors
 
 import "errors"
 
+var ErrBusy = errors.New("service capacity exhausted")
+
 var ErrUnsupportedURL = errors.New("unsupported video URL")
 var ErrAuthentication = errors.New("platform requires authentication cookies")
 

@@ -14,15 +14,15 @@ import (
 	apperrors "video-downloader/internal/errors"
 )
 
-type Enqueuer interface {
-	Enqueue(context.Context, int64, int64, string) error
+type Submitter interface {
+	Submit(context.Context, int64, int64, string) error
 }
 type Webhook struct {
-	service Enqueuer
+	service Submitter
 	secret  string
 }
 
-func NewWebhook(service Enqueuer, secret string) *Webhook {
+func NewWebhook(service Submitter, secret string) *Webhook {
 	return &Webhook{service: service, secret: secret}
 }
 
@@ -69,13 +69,13 @@ func (h *Webhook) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m := u.Message
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	err = h.service.Enqueue(ctx, *u.ID, m.Chat.ID, m.linkText())
+	err = h.service.Submit(ctx, *u.ID, m.Chat.ID, m.linkText())
 	if errors.Is(err, apperrors.ErrUnsupportedURL) || apperrors.IsPermanent(err) {
 		w.WriteHeader(200)
 		return
 	}
 	if err != nil {
-		http.Error(w, "queue unavailable", 503)
+		http.Error(w, "service busy", 503)
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)

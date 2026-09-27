@@ -1,4 +1,4 @@
-package video
+package model
 
 import (
 	"net/url"
@@ -6,10 +6,9 @@ import (
 	"strings"
 
 	apperrors "video-downloader/internal/errors"
-	"video-downloader/internal/service/model"
 )
 
-func Detect(raw string) (model.Platform, error) {
+func DetectPlatform(raw string) (Platform, error) {
 	u, err := url.ParseRequestURI(raw)
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Port() != "" {
 		return "", apperrors.ErrUnsupportedURL
@@ -17,9 +16,9 @@ func Detect(raw string) (model.Platform, error) {
 	host := strings.ToLower(u.Hostname())
 	for _, candidate := range []struct {
 		host     string
-		platform model.Platform
+		platform Platform
 	}{
-		{"youtube.com", model.YouTube}, {"youtu.be", model.YouTube}, {"instagram.com", model.Instagram}, {"tiktok.com", model.TikTok},
+		{"youtube.com", YouTube}, {"youtu.be", YouTube}, {"instagram.com", Instagram}, {"tiktok.com", TikTok},
 	} {
 		if host == candidate.host || strings.HasSuffix(host, "."+candidate.host) {
 			return candidate.platform, nil
@@ -30,10 +29,10 @@ func Detect(raw string) (model.Platform, error) {
 
 var urlPattern = regexp.MustCompile(`https?://[^\s<>]+`)
 
-func Extract(text string) (string, error) {
+func ExtractURL(text string) (string, error) {
 	for _, raw := range urlPattern.FindAllString(text, -1) {
 		raw = strings.TrimRight(raw, ".,!?;:)]}\"'")
-		if _, err := Detect(raw); err == nil {
+		if _, err := DetectPlatform(raw); err == nil {
 			return raw, nil
 		}
 	}

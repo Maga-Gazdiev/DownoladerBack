@@ -2,141 +2,99 @@ package telegram
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
+	"sync"
+	"time"
 
 	apperrors "video-downloader/internal/errors"
-	"video-downloader/internal/service/model"
-	"video-downloader/internal/service/video"
+	"video-downloader/internal/model"
 )
 
-type Downloader interface {
-	Download(ctx context.Context, rawURL, outputDir string) (model.File, error)
+type delivery struct {
+	running bool
+	expires time.Time
 }
 
-type Publisher interface {
-	Publish(ctx context.Context, queue string, body []byte) error
-}
-type Telegram interface {
-	SendVideo(ctx context.Context, chatID int64, path string) error
-}
-
-type DownloadFiles interface {
-	Directory(id string) (string, error)
-	Cached(id string) (model.File, bool, error)
-	Remember(id string, file model.File) error
-	Sent(id string) (bool, error)
-	Cleanup(id string) error
-}
-
-type SendFiles interface {
-	Path(id string, file model.File) (string, error)
-	Sent(id string) (bool, error)
-	MarkSent(id string) error
-	Cleanup(id string) error
-}
-type Webhook struct{ publisher Publisher }
-
-func NewWebhook(p Publisher) *Webhook { return &Webhook{publisher: p} }
-func (s *Webhook) Enqueue(ctx context.Context, updateID, chatID int64, text string) error {
-	url, err := video.Extract(text)
+func (s *Service) Submit(ctx context.Context, updateID, chatID int64, text string) error {
+	raw, err := model.ExtractURL(text)
 	if err != nil {
 		return err
 	}
 	if chatID == 0 {
 		return apperrors.Permanent(errors.New("missing chat ID"))
 	}
-	id := sha256.Sum256([]byte(fmt.Sprintf("%d:%d", chatID, updateID)))
-	return publish(ctx, s.publisher, model.DownloadQueue, model.DownloadJob{ID: hex.EncodeToString(id[:]), ChatID: chatID, URL: url})
-}
-
-type Download struct {
-	downloader Downloader
-	publisher  Publisher
-	files      DownloadFiles
-}
-
-func NewDownload(d Downloader, p Publisher, f DownloadFiles) *Download {
-	return &Download{downloader: d, publisher: p, files: f}
-}
-func (s *Download) Process(ctx context.Context, job model.DownloadJob) error {
-	if job.ChatID == 0 {
-		return apperrors.Permanent(errors.New("missing chat ID"))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for id, d := range s.seen {
+		if !d.running && now.After(d.expires) {
+			delete(s.seen, id)
+		}
 	}
-	if _, err := video.Detect(job.URL); err != nil {
-		return apperrors.Permanent(err)
+	if _, ok := s.seen[updateID]; ok {
+		return nil
 	}
-	dir, err := s.files.Directory(job.ID)
-	if err != nil {
-		return err
+	if len(s.seen) >= 10000 {
+		return apperrors.ErrBusy
 	}
-	sent, err := s.files.Sent(job.ID)
-	if err != nil {
-		return err
-	}
-	if sent {
-		return s.files.Cleanup(job.ID)
-	}
-	file, found, err := s.files.Cached(job.ID)
-	if err != nil {
-		return err
-	}
-	if !found {
-		slog.Info("telegram download started", "job_id", job.ID)
-		file, err = s.downloader.Download(ctx, job.URL, dir)
+	s.seen[updateID] = delivery{running: true}
+	err = s.tasks.Start(ctx, func(ctx context.Context) {
+		success := false
+		defer func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if success {
+				s.seen[updateID] = delivery{expires: time.Now().Add(time.Hour)}
+			} else {
+				delete(s.seen, updateID)
+			}
+		}()
+		media, err := s.download(ctx, raw)
 		if err != nil {
-			return fmt.Errorf("download: %w", err)
+			slog.Warn("telegram download failed", "update_id", updateID)
+			return
 		}
-		slog.Info("telegram download prepared", "job_id", job.ID)
-		if err = s.files.Remember(job.ID, file); err != nil {
-			return err
+		defer media.Close()
+		sendCtx, cancel := context.WithTimeout(ctx, s.sendTimeout)
+		defer cancel()
+		if err := s.client.SendVideo(sendCtx, chatID, media); err != nil {
+			slog.Warn("telegram send failed", "update_id", updateID)
+			return
 		}
-	}
-	// Retain the file on ambiguous publish failure; the next attempt reuses it.
-	return publish(ctx, s.publisher, model.SendQueue, model.SendJob{ID: job.ID, ChatID: job.ChatID, File: file})
-}
-
-type Send struct {
-	client Telegram
-	files  SendFiles
-}
-
-func NewSend(c Telegram, f SendFiles) *Send { return &Send{client: c, files: f} }
-func (s *Send) Process(ctx context.Context, job model.SendJob) error {
-	if job.ChatID == 0 {
-		return apperrors.Permanent(errors.New("missing chat ID"))
-	}
-	sent, err := s.files.Sent(job.ID)
+		success = true
+	})
 	if err != nil {
-		return err
+		delete(s.seen, updateID)
 	}
-	if !sent {
-		path, err := s.files.Path(job.ID, job.File)
-		if err != nil {
-			return err
-		}
-		if err = s.client.SendVideo(ctx, job.ChatID, path); err != nil {
-			return err
-		}
-		if err = s.files.MarkSent(job.ID); err != nil {
-			return fmt.Errorf("record delivery: %w", err)
-		}
-	}
-	if err := s.files.Cleanup(job.ID); err != nil {
-		slog.Warn("sent file cleanup failed", "job_id", job.ID, "error", err)
-		return err
-	}
-	return nil
+	return err
 }
 
-func publish(ctx context.Context, p Publisher, queue string, value any) error {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	return p.Publish(ctx, queue, body)
+type Downloader interface {
+	Download(context.Context, string) (*model.Media, error)
+}
+type Tasks interface {
+	Start(context.Context, func(context.Context)) error
+}
+
+func (s *Service) download(ctx context.Context, raw string) (*model.Media, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.downloadTimeout)
+	defer cancel()
+	return s.downloader.Download(ctx, raw)
+}
+
+type Telegram interface {
+	SendVideo(context.Context, int64, *model.Media) error
+}
+type Service struct {
+	downloader                   Downloader
+	client                       Telegram
+	tasks                        Tasks
+	downloadTimeout, sendTimeout time.Duration
+	mu                           sync.Mutex
+	seen                         map[int64]delivery
+}
+
+func New(tasks Tasks, d Downloader, client Telegram, downloadTimeout, sendTimeout time.Duration) *Service {
+	return &Service{tasks: tasks, downloader: d, client: client, downloadTimeout: downloadTimeout, sendTimeout: sendTimeout, seen: make(map[int64]delivery)}
 }

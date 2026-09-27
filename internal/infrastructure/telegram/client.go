@@ -8,12 +8,12 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
-	"path/filepath"
+
 	"strconv"
 	"strings"
 
 	apperrors "video-downloader/internal/errors"
+	"video-downloader/internal/model"
 )
 
 type Client struct {
@@ -25,33 +25,20 @@ type Client struct {
 func New(token, baseURL string, client *http.Client, maxBytes int64) *Client {
 	return &Client{token: token, baseURL: strings.TrimRight(baseURL, "/"), http: client, maxBytes: maxBytes}
 }
-func (c *Client) SendVideo(ctx context.Context, chatID int64, path string) error {
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return apperrors.Permanent(errors.New("video file is missing"))
+func (c *Client) SendVideo(ctx context.Context, chatID int64, media *model.Media) error {
+	if media.Size() == 0 || media.Size() > c.maxBytes {
+		return apperrors.Permanent(errors.New("invalid video size"))
 	}
+	f, err := media.Open()
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || info.Size() == 0 {
-		return apperrors.Permanent(errors.New("video is empty or not a regular file"))
-	}
-	if info.Size() > c.maxBytes {
-		return apperrors.Permanent(fmt.Errorf("video size %d exceeds Telegram upload limit %d", info.Size(), c.maxBytes))
-	}
-	// Stream the multipart body; do not buffer the entire video in RAM.
+	// Stream multipart framing around the existing buffer without a second copy.
 	reader, writer := io.Pipe()
 	multipartWriter := multipart.NewWriter(writer)
 	defer reader.Close()
 	method, field := "sendVideo", "video"
-	if strings.ToLower(filepath.Ext(path)) != ".mp4" {
-		method, field = "sendDocument", "document"
-	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/bot"+c.token+"/"+method, reader)
 	if err != nil {
 		return errors.New("invalid Telegram API URL")
@@ -65,7 +52,7 @@ func (c *Client) SendVideo(ctx context.Context, chatID int64, path string) error
 		}
 		if err == nil {
 			var part io.Writer
-			part, err = multipartWriter.CreateFormFile(field, filepath.Base(path))
+			part, err = multipartWriter.CreateFormFile(field, media.File.Name)
 			if err == nil {
 				_, err = io.Copy(part, f)
 			}

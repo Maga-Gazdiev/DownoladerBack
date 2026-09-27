@@ -9,15 +9,8 @@ import (
 
 type Exec struct{}
 
-func (Exec) Run(ctx context.Context, binary string, args ...string) error {
-	return execute(ctx, nil, binary, args...)
-}
-
-// Output bounds captured stdout, just like diagnostic stderr.
-func (Exec) Output(ctx context.Context, binary string, args ...string) ([]byte, error) {
-	var output tailBuffer
-	err := execute(ctx, &output, binary, args...)
-	return output.data, err
+func (Exec) Stream(ctx context.Context, output io.Writer, binary string, args ...string) error {
+	return execute(ctx, output, binary, args...)
 }
 
 func execute(ctx context.Context, stdout io.Writer, binary string, args ...string) error {

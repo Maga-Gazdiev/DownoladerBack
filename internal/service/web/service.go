@@ -4,34 +4,28 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	apperrors "video-downloader/internal/errors"
-	"video-downloader/internal/service/model"
-	"video-downloader/internal/service/video"
+	"video-downloader/internal/model"
 )
 
 var ErrWebNotReady = errors.New("file is not ready")
 var ErrWebExpired = errors.New("download expired")
 
-type Web struct {
-	publisher  Publisher
-	jobs       WebJobs
-	downloader Downloader
-	ttl        time.Duration
+type entry struct {
+	job   model.WebJob
+	media *model.Media
+	timer *time.Timer
 }
 
-func NewWeb(p Publisher, j WebJobs, d Downloader, ttl time.Duration) *Web {
-	return &Web{publisher: p, jobs: j, downloader: d, ttl: ttl}
-}
-func (s *Web) Create(ctx context.Context, raw string) (model.WebJob, error) {
-	platform, err := video.Detect(raw)
+func (s *Service) Create(ctx context.Context, raw string) (model.WebJob, error) {
+	platform, err := model.DetectPlatform(raw)
 	if err != nil {
 		return model.WebJob{}, err
 	}
@@ -39,127 +33,146 @@ func (s *Web) Create(ctx context.Context, raw string) (model.WebJob, error) {
 	if _, err := rand.Read(id[:]); err != nil {
 		return model.WebJob{}, err
 	}
-	job := model.WebJob{ID: hex.EncodeToString(id[:]), URL: raw, Platform: platform, Status: "queued", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(s.ttl)}
-	if err := s.jobs.Save(ctx, job); err != nil {
-		return job, err
+	now := time.Now().UTC()
+	job := model.WebJob{ID: hex.EncodeToString(id[:]), URL: raw, Platform: platform, Status: "downloading", CreatedAt: now, ExpiresAt: now.Add(s.ttl)}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return model.WebJob{}, context.Canceled
 	}
-	// Keep queued state on ambiguous publish failure: a confirmed job may arrive later.
-	if err := publish(ctx, s.publisher, model.WebQueue, struct {
-		ID string `json:"id"`
-	}{job.ID}); err != nil {
-		return job, err
+	if len(s.jobs) >= s.maxJobs {
+		return model.WebJob{}, apperrors.ErrBusy
 	}
-	return job, nil
-}
-func (s *Web) Get(ctx context.Context, id string) (model.WebJob, error) {
-	job, err := s.jobs.Get(ctx, id)
-	if err != nil {
-		return job, err
-	}
-	if time.Now().After(job.ExpiresAt) {
-		return job, ErrWebExpired
+	e := &entry{job: job}
+	s.jobs[job.ID] = e
+	if err := s.tasks.Start(ctx, func(ctx context.Context) { s.process(ctx, job.ID, raw) }); err != nil {
+		delete(s.jobs, job.ID)
+		return model.WebJob{}, err
 	}
 	return job, nil
 }
-func (s *Web) Open(ctx context.Context, id string) (io.ReadSeekCloser, model.WebJob, error) {
-	job, err := s.Get(ctx, id)
+func (s *Service) process(ctx context.Context, id, raw string) {
+	media, err := s.download(ctx, raw)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.jobs[id]
+	if !ok || s.closed {
+		if media != nil {
+			media.Close()
+		}
+		return
+	}
 	if err != nil {
-		return nil, job, err
+		if media != nil {
+			media.Close()
+		}
+		slog.Warn("web download failed", "job_id", id, "reason", downloadFailureCode(err))
+		e.job.Status = "failed"
+		e.job.Error = "Не удалось скачать видео. Проверьте доступность ссылки и попробуйте ещё раз."
+		if errors.Is(err, apperrors.ErrAuthentication) {
+			e.job.Error = "Источник требует авторизацию. Проверьте cookies на сервере."
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			e.job.Error = "Превышено время скачивания. Попробуйте более короткое видео."
+		}
+		if errors.Is(err, apperrors.ErrBusy) {
+			e.job.Error = "Недостаточно свободной памяти. Попробуйте позже."
+		}
+	} else {
+		e.media = media
+		e.job.File = media.File
+		e.job.Size = media.Size()
+		e.job.Status = "ready"
 	}
-	if job.Status != "ready" {
-		return nil, job, ErrWebNotReady
-	}
-	f, _, err := s.jobs.Open(ctx, id, job.File)
-	return f, job, err
+	e.job.ExpiresAt = time.Now().UTC().Add(s.ttl)
+	e.timer = time.AfterFunc(s.ttl, func() { s.expire(id) })
 }
-func (s *Web) Process(ctx context.Context, message struct {
-	ID string `json:"id"`
-}) error {
-	release, err := s.jobs.Acquire(message.ID)
-	if err != nil {
-		return err
-	}
-	defer release()
-	job, err := s.jobs.Get(ctx, message.ID)
-	if errors.Is(err, os.ErrNotExist) {
-		return apperrors.Permanent(err)
-	}
-	if err != nil {
-		return err
-	}
-	if time.Now().After(job.ExpiresAt) || job.Status == "ready" || job.Status == "failed" {
-		return nil
-	}
-	dir, err := s.jobs.Directory(job.ID)
-	if err != nil {
-		return err
-	}
-	job.Status = "downloading"
-	if err := s.jobs.Save(ctx, job); err != nil {
-		return err
-	}
-	slog.Info("web download started", "job_id", job.ID, "platform", job.Platform)
-	file, downloadErr := s.downloader.Download(ctx, job.URL, dir)
-	if downloadErr != nil {
-		slog.Warn("web download failed", "job_id", job.ID, "platform", job.Platform, "reason", downloadFailureCode(downloadErr))
-		job.Status = "failed"
-		job.Error = "Не удалось скачать видео. Проверьте доступность ссылки и попробуйте ещё раз."
-		if errors.Is(downloadErr, apperrors.ErrAuthentication) {
-			job.Error = "YouTube требует авторизацию. Подключите cookies на сервере и повторите скачивание."
+func (s *Service) expire(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.jobs[id]; ok {
+		delete(s.jobs, id)
+		if e.media != nil {
+			e.media.Close()
 		}
-		if errors.Is(downloadErr, context.DeadlineExceeded) {
-			job.Error = "Превышено время скачивания. Попробуйте более короткое видео."
-		}
-		if errors.Is(downloadErr, context.Canceled) {
-			job.Status = "queued"
-			job.Error = ""
-			if err := s.jobs.Save(ctx, job); err != nil {
-				return err
-			}
-			return downloadErr
-		}
-		if err := s.jobs.Save(ctx, job); err != nil {
-			return err
-		}
-		// A completed failed web job is visible to its owner; explicit UI retry creates a new job.
-		return nil
 	}
-	size, err := s.jobs.StoreFile(ctx, job.ID, file)
-	if err != nil {
-		return err
-	}
-	if size == 0 {
-		return fmt.Errorf("empty downloaded file")
-	}
-	slog.Info("web video uploaded", "job_id", job.ID, "size", size)
-	job.Status = "ready"
-	job.File = file
-	job.Size = size
-	job.Error = ""
-	job.ExpiresAt = time.Now().UTC().Add(s.ttl)
-	return s.jobs.Save(ctx, job)
 }
-
-func publish(ctx context.Context, p Publisher, queue string, value any) error {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return err
+func (s *Service) get(id string) (*entry, error) {
+	e, ok := s.jobs[id]
+	if !ok {
+		return nil, os.ErrNotExist
 	}
-	return p.Publish(ctx, queue, body)
+	if e.job.Status != "downloading" && time.Now().After(e.job.ExpiresAt) {
+		return nil, ErrWebExpired
+	}
+	return e, nil
+}
+func (s *Service) Get(ctx context.Context, id string) (model.WebJob, error) {
+	if err := ctx.Err(); err != nil {
+		return model.WebJob{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, err := s.get(id)
+	if err != nil {
+		return model.WebJob{}, err
+	}
+	return e.job, nil
+}
+func (s *Service) Open(ctx context.Context, id string) (io.ReadSeekCloser, model.WebJob, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, model.WebJob{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, err := s.get(id)
+	if err != nil {
+		return nil, model.WebJob{}, err
+	}
+	if e.job.Status != "ready" {
+		return nil, e.job, ErrWebNotReady
+	}
+	r, err := e.media.Open()
+	return r, e.job, err
+}
+func (s *Service) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+	for id, e := range s.jobs {
+		if e.timer != nil {
+			e.timer.Stop()
+		}
+		if e.media != nil {
+			e.media.Close()
+		}
+		delete(s.jobs, id)
+	}
 }
 
 type Downloader interface {
-	Download(ctx context.Context, rawURL, outputDir string) (model.File, error)
+	Download(context.Context, string) (*model.Media, error)
+}
+type Tasks interface {
+	Start(context.Context, func(context.Context)) error
 }
 
-type Publisher interface {
-	Publish(ctx context.Context, queue string, body []byte) error
+func (s *Service) download(ctx context.Context, raw string) (*model.Media, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.downloadTimeout)
+	defer cancel()
+	return s.downloader.Download(ctx, raw)
 }
-type WebJobs interface {
-	Acquire(string) (func(), error)
-	Save(context.Context, model.WebJob) error
-	Get(context.Context, string) (model.WebJob, error)
-	Open(context.Context, string, model.File) (io.ReadSeekCloser, int64, error)
-	StoreFile(context.Context, string, model.File) (int64, error)
-	Directory(string) (string, error)
+
+type Service struct {
+	downloader           Downloader
+	tasks                Tasks
+	downloadTimeout, ttl time.Duration
+	maxJobs              int
+	mu                   sync.Mutex
+	jobs                 map[string]*entry
+	closed               bool
+}
+
+func New(tasks Tasks, d Downloader, timeout, ttl time.Duration, maxJobs int) *Service {
+	return &Service{tasks: tasks, downloader: d, downloadTimeout: timeout, ttl: ttl, maxJobs: maxJobs, jobs: make(map[string]*entry)}
 }

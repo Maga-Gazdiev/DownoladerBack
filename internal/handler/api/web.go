@@ -12,7 +12,7 @@ import (
 	"time"
 
 	apperrors "video-downloader/internal/errors"
-	"video-downloader/internal/service/model"
+	"video-downloader/internal/model"
 	service "video-downloader/internal/service/web"
 )
 
@@ -45,7 +45,7 @@ func NewWebAPI(s WebService, token string) http.Handler {
 			return
 		}
 		if err != nil {
-			webError(w, 503, "Очередь недоступна. Попробуйте позже.")
+			webError(w, 503, "Сервис занят. Попробуйте позже.")
 			return
 		}
 		webJSON(w, 202, job)
@@ -84,7 +84,7 @@ func NewWebAPI(s WebService, token string) http.Handler {
 func webJobError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrWebExpired):
-		webError(w, 410, "Срок хранения файла истёк. Скачайте видео заново.")
+		webError(w, 410, "Срок доступности видео истёк. Скачайте видео заново.")
 	case errors.Is(err, service.ErrWebNotReady):
 		webError(w, 409, "Файл ещё не готов")
 	case errors.Is(err, os.ErrNotExist), apperrors.IsPermanent(err):
