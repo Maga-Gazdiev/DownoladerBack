@@ -18,8 +18,8 @@ import (
 
 type WebService interface {
 	Create(context.Context, string) (model.WebJob, error)
-	Get(string) (model.WebJob, error)
-	Open(string) (io.ReadSeekCloser, model.WebJob, error)
+	Get(context.Context, string) (model.WebJob, error)
+	Open(context.Context, string) (io.ReadSeekCloser, model.WebJob, error)
 }
 
 func NewWebAPI(s WebService, token string) http.Handler {
@@ -51,7 +51,7 @@ func NewWebAPI(s WebService, token string) http.Handler {
 		webJSON(w, 202, job)
 	})
 	mux.HandleFunc("GET /api/downloads/{id}", func(w http.ResponseWriter, r *http.Request) {
-		job, err := s.Get(r.PathValue("id"))
+		job, err := s.Get(r.Context(), r.PathValue("id"))
 		if err != nil {
 			webJobError(w, err)
 			return
@@ -59,7 +59,7 @@ func NewWebAPI(s WebService, token string) http.Handler {
 		webJSON(w, 200, job)
 	})
 	mux.HandleFunc("GET /api/downloads/{id}/file", func(w http.ResponseWriter, r *http.Request) {
-		f, job, err := s.Open(r.PathValue("id"))
+		f, job, err := s.Open(r.Context(), r.PathValue("id"))
 		if err != nil {
 			webJobError(w, err)
 			return

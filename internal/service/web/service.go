@@ -40,7 +40,7 @@ func (s *Web) Create(ctx context.Context, raw string) (model.WebJob, error) {
 		return model.WebJob{}, err
 	}
 	job := model.WebJob{ID: hex.EncodeToString(id[:]), URL: raw, Platform: platform, Status: "queued", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(s.ttl)}
-	if err := s.jobs.Save(job); err != nil {
+	if err := s.jobs.Save(ctx, job); err != nil {
 		return job, err
 	}
 	// Keep queued state on ambiguous publish failure: a confirmed job may arrive later.
@@ -51,8 +51,8 @@ func (s *Web) Create(ctx context.Context, raw string) (model.WebJob, error) {
 	}
 	return job, nil
 }
-func (s *Web) Get(id string) (model.WebJob, error) {
-	job, err := s.jobs.Get(id)
+func (s *Web) Get(ctx context.Context, id string) (model.WebJob, error) {
+	job, err := s.jobs.Get(ctx, id)
 	if err != nil {
 		return job, err
 	}
@@ -61,15 +61,15 @@ func (s *Web) Get(id string) (model.WebJob, error) {
 	}
 	return job, nil
 }
-func (s *Web) Open(id string) (io.ReadSeekCloser, model.WebJob, error) {
-	job, err := s.Get(id)
+func (s *Web) Open(ctx context.Context, id string) (io.ReadSeekCloser, model.WebJob, error) {
+	job, err := s.Get(ctx, id)
 	if err != nil {
 		return nil, job, err
 	}
 	if job.Status != "ready" {
 		return nil, job, ErrWebNotReady
 	}
-	f, _, err := s.jobs.Open(id, job.File)
+	f, _, err := s.jobs.Open(ctx, id, job.File)
 	return f, job, err
 }
 func (s *Web) Process(ctx context.Context, message struct {
@@ -80,7 +80,7 @@ func (s *Web) Process(ctx context.Context, message struct {
 		return err
 	}
 	defer release()
-	job, err := s.jobs.Get(message.ID)
+	job, err := s.jobs.Get(ctx, message.ID)
 	if errors.Is(err, os.ErrNotExist) {
 		return apperrors.Permanent(err)
 	}
@@ -95,7 +95,7 @@ func (s *Web) Process(ctx context.Context, message struct {
 		return err
 	}
 	job.Status = "downloading"
-	if err := s.jobs.Save(job); err != nil {
+	if err := s.jobs.Save(ctx, job); err != nil {
 		return err
 	}
 	file, downloadErr := s.downloader.Download(ctx, job.URL, dir)
@@ -112,22 +112,21 @@ func (s *Web) Process(ctx context.Context, message struct {
 		if errors.Is(downloadErr, context.Canceled) {
 			job.Status = "queued"
 			job.Error = ""
-			if err := s.jobs.Save(job); err != nil {
+			if err := s.jobs.Save(ctx, job); err != nil {
 				return err
 			}
 			return downloadErr
 		}
-		if err := s.jobs.Save(job); err != nil {
+		if err := s.jobs.Save(ctx, job); err != nil {
 			return err
 		}
 		// A completed failed web job is visible to its owner; explicit UI retry creates a new job.
 		return nil
 	}
-	f, size, err := s.jobs.Open(job.ID, file)
+	size, err := s.jobs.StoreFile(ctx, job.ID, file)
 	if err != nil {
 		return err
 	}
-	f.Close()
 	if size == 0 {
 		return fmt.Errorf("empty downloaded file")
 	}
@@ -136,7 +135,7 @@ func (s *Web) Process(ctx context.Context, message struct {
 	job.Size = size
 	job.Error = ""
 	job.ExpiresAt = time.Now().UTC().Add(s.ttl)
-	return s.jobs.Save(job)
+	return s.jobs.Save(ctx, job)
 }
 
 func publish(ctx context.Context, p Publisher, queue string, value any) error {
@@ -156,8 +155,9 @@ type Publisher interface {
 }
 type WebJobs interface {
 	Acquire(string) (func(), error)
-	Save(model.WebJob) error
-	Get(string) (model.WebJob, error)
-	Open(string, model.File) (io.ReadSeekCloser, int64, error)
+	Save(context.Context, model.WebJob) error
+	Get(context.Context, string) (model.WebJob, error)
+	Open(context.Context, string, model.File) (io.ReadSeekCloser, int64, error)
+	StoreFile(context.Context, string, model.File) (int64, error)
 	Directory(string) (string, error)
 }

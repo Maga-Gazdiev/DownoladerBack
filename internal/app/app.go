@@ -10,6 +10,7 @@ import (
 	"video-downloader/internal/handler/api"
 	"video-downloader/internal/handler/queue"
 	telegramhandler "video-downloader/internal/handler/telegram"
+	"video-downloader/internal/infrastructure/backblaze"
 	"video-downloader/internal/infrastructure/command"
 	"video-downloader/internal/infrastructure/ffmpeg"
 	"video-downloader/internal/infrastructure/rabbitmq"
@@ -37,9 +38,25 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	webStore, err := files.NewWeb(cfg.DownloadDir)
-	if err != nil {
-		return err
+	var webStore interface {
+		web.WebJobs
+		worker.Cleaner
+	}
+	if cfg.B2Endpoint != "" {
+		remote, err := backblaze.NewWeb(cfg.DownloadDir, cfg.B2Endpoint, cfg.B2Bucket, cfg.B2KeyID, cfg.B2ApplicationKey)
+		if err != nil {
+			return err
+		}
+		if err := remote.Check(ctx); err != nil {
+			return err
+		}
+		webStore = remote
+	} else {
+		local, err := files.NewWeb(cfg.DownloadDir)
+		if err != nil {
+			return err
+		}
+		webStore = local
 	}
 	source, err := sourceDownloader(cfg)
 	if err != nil {

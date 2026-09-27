@@ -47,7 +47,14 @@ func (s *WebStore) Acquire(id string) (func(), error) {
 		})
 	}, nil
 }
-func (s *WebStore) Save(job model.WebJob) error {
+
+func (s *WebStore) Active(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active[id] != 0
+}
+
+func (s *WebStore) Save(_ context.Context, job model.WebJob) error {
 	dir, err := s.Directory(job.ID)
 	if err != nil {
 		return err
@@ -61,7 +68,7 @@ func (s *WebStore) Save(job model.WebJob) error {
 	}
 	return atomicWrite(filepath.Join(dir, "job.json"), body)
 }
-func (s *WebStore) Get(id string) (model.WebJob, error) {
+func (s *WebStore) Get(_ context.Context, id string) (model.WebJob, error) {
 	var job model.WebJob
 	dir, err := s.Directory(id)
 	if err != nil {
@@ -74,7 +81,7 @@ func (s *WebStore) Get(id string) (model.WebJob, error) {
 	err = json.Unmarshal(body, &job)
 	return job, err
 }
-func (s *WebStore) Open(id string, file model.File) (io.ReadSeekCloser, int64, error) {
+func (s *WebStore) Open(_ context.Context, id string, file model.File) (io.ReadSeekCloser, int64, error) {
 	release, err := s.Acquire(id)
 	if err != nil {
 		return nil, 0, err
@@ -104,6 +111,22 @@ func (s *WebStore) Open(id string, file model.File) (io.ReadSeekCloser, int64, e
 	}
 	keep = true
 	return &leasedFile{File: f, release: release}, info.Size(), nil
+}
+
+// StoreFile verifies a locally downloaded video; the disk-backed store needs no upload.
+func (s *WebStore) StoreFile(_ context.Context, id string, file model.File) (int64, error) {
+	path, err := s.Path(id, file)
+	if err != nil {
+		return 0, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("not a regular file")
+	}
+	return info.Size(), nil
 }
 
 type leasedFile struct {
@@ -142,7 +165,7 @@ func (s *WebStore) sweepJob(id string, now time.Time) error {
 	if s.active[id] != 0 {
 		return nil
 	}
-	job, err := s.Get(id)
+	job, err := s.Get(context.Background(), id)
 	if os.IsNotExist(err) {
 		return nil
 	}

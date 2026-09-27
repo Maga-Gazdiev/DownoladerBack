@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	RabbitURL, QueuePrefix, Token, Secret, HTTPAddr, DownloadDir string
+	B2Endpoint, B2Bucket, B2KeyID, B2ApplicationKey              string
 	YTDLP, GalleryDL, CookiesBrowser, Backend, TelegramURL       string
 	VideoFormat, VideoResolution, VideoCodec                     string
 	CookiesFile, WebToken                                        string
@@ -23,6 +24,8 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		RabbitURL: os.Getenv("RABBIT_AMQP_URL"), QueuePrefix: os.Getenv("QUEUE_PREFIX"),
+		B2Endpoint: os.Getenv("B2_ENDPOINT"), B2Bucket: os.Getenv("B2_BUCKET"),
+		B2KeyID: os.Getenv("KEYID"), B2ApplicationKey: os.Getenv("APPLICATIONKEY"),
 		Token: os.Getenv("TELEGRAM_BOT_TOKEN"), Secret: os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
 		HTTPAddr: value("HTTP_ADDR", ":8085"), DownloadDir: value("DOWNLOAD_DIR", "downloads"),
 		YTDLP: value("YT_DLP_BIN", "yt-dlp"), GalleryDL: value("GALLERY_DL_BIN", "gallery-dl"),
@@ -55,12 +58,20 @@ func Load() (Config, error) {
 	if c.WebTTL <= c.JobTimeout {
 		return c, errors.New("WEB_FILE_TTL must exceed DOWNLOAD_TIMEOUT")
 	}
-	c.CleanupInterval, err = duration("CLEANUP_INTERVAL", "1m")
+	cleanupDefault := "1m"
+	if c.B2Endpoint != "" {
+		cleanupDefault = "30m"
+	}
+	c.CleanupInterval, err = duration("CLEANUP_INTERVAL", cleanupDefault)
 	if err != nil {
 		return c, err
 	}
 	if c.Backend != "yt-dlp" && c.Backend != "gostreampuller" {
 		return c, errors.New("VIDEO_BACKEND must be yt-dlp or gostreampuller")
+	}
+	if (c.B2Endpoint != "" || c.B2Bucket != "" || c.B2KeyID != "" || c.B2ApplicationKey != "") &&
+		(c.B2Endpoint == "" || c.B2Bucket == "" || c.B2KeyID == "" || c.B2ApplicationKey == "") {
+		return c, errors.New("B2_ENDPOINT, B2_BUCKET, KEYID and APPLICATIONKEY must all be set")
 	}
 	return c, nil
 }
