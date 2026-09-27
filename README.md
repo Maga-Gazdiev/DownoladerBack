@@ -43,7 +43,15 @@ make logs
 
 Compose запускает только приложение; внешняя Docker-сеть и volume для видео не нужны. Порт по умолчанию — 8085. После изменения env или кода выполните `make up`.
 
-Локально нужны Go 1.25.5, yt-dlp с EJS, FFmpeg и Node.js:
+Локально нужны Go 1.25.5, yt-dlp с EJS и curl-cffi, FFmpeg и Node.js. curl-cffi нужен загрузчику для браузерных HTTP/TLS-запросов к TikTok; в Docker он устанавливается через `yt-dlp[default,curl-cffi]` ([документация yt-dlp](https://github.com/yt-dlp/yt-dlp#impersonation)).
+
+```sh
+python3 -m pip install -U "yt-dlp[default,curl-cffi]"
+```
+
+После изменения Dockerfile пересоберите образ. На Render выполните **Manual Deploy → Deploy latest commit** после отправки изменений в подключённый репозиторий.
+
+Локальный запуск:
 
 ```sh
 make run
