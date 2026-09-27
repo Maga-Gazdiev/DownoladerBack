@@ -3,8 +3,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -24,7 +22,7 @@ type Config struct {
 
 func Load() (Config, error) {
 	c := Config{
-		RabbitURL: os.Getenv("RABBITMQ_URL"), QueuePrefix: os.Getenv("QUEUE_PREFIX"),
+		RabbitURL: os.Getenv("RABBIT_AMQP_URL"), QueuePrefix: os.Getenv("QUEUE_PREFIX"),
 		Token: os.Getenv("TELEGRAM_BOT_TOKEN"), Secret: os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
 		HTTPAddr: value("HTTP_ADDR", ":8085"), DownloadDir: value("DOWNLOAD_DIR", "downloads"),
 		YTDLP: value("YT_DLP_BIN", "yt-dlp"), GalleryDL: value("GALLERY_DL_BIN", "gallery-dl"),
@@ -32,18 +30,6 @@ func Load() (Config, error) {
 		TelegramURL: value("TELEGRAM_API_URL", "https://api.telegram.org"),
 		VideoFormat: value("VIDEO_FORMAT", "mp4"), VideoResolution: value("VIDEO_RESOLUTION", "720"), VideoCodec: value("VIDEO_CODEC", "avc1"),
 		CookiesFile: os.Getenv("YOUTUBE_COOKIES_FILE"), WebToken: os.Getenv("WEB_API_TOKEN"),
-	}
-	if c.RabbitURL == "" && os.Getenv("RABBIT_HOST") != "" {
-		port := value("RABBIT_PORT", "5672")
-		n, err := strconv.Atoi(port)
-		if err != nil || n < 1 || n > 65535 {
-			return c, errors.New("RABBIT_PORT must be between 1 and 65535")
-		}
-		vhost := value("RABBIT_VHOST", "/")
-		u := url.URL{Scheme: "amqp", Host: net.JoinHostPort(os.Getenv("RABBIT_HOST"), port),
-			User: url.UserPassword(os.Getenv("RABBIT_USER"), os.Getenv("RABBIT_PASSWORD")),
-			Path: "/" + vhost, RawPath: "/" + url.PathEscape(vhost)}
-		c.RabbitURL = u.String()
 	}
 	var err error
 	c.MaxRetries, err = strconv.Atoi(value("MAX_RETRIES", "3"))

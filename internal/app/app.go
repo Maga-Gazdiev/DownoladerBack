@@ -24,7 +24,7 @@ import (
 
 func Run(ctx context.Context, cfg config.Config) error {
 	if cfg.RabbitURL == "" || cfg.Secret == "" || cfg.WebToken == "" || cfg.Token == "" {
-		return errors.New("RabbitMQ, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET and WEB_API_TOKEN are required")
+		return errors.New("RABBIT_AMQP_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET and WEB_API_TOKEN are required")
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

@@ -19,7 +19,7 @@ make logs
 make health
 ```
 
-`docker-compose.yml` подключается к существующей сети `tool_default` и RabbitMQ через `host.docker.internal:5672`. Новые RabbitMQ/PostgreSQL не создаются. Проект Compose и volume downloads сохранены; `make up` удаляет старые контейнеры отдельных worker’ов этого проекта, сохраняя данные.
+`docker-compose.yml` подключается к существующей сети `tool_default`; адрес RabbitMQ задаётся только через `RABBIT_AMQP_URL`. Новые RabbitMQ/PostgreSQL не создаются. Проект Compose и volume downloads сохранены; `make up` удаляет старые контейнеры отдельных worker’ов этого проекта, сохраняя данные.
 
 HTTP слушает `:8085` внутри контейнера, порт хоста задаётся `HTTP_PORT`. CloudPub должен проксировать `http://localhost:8085`.
 
@@ -44,7 +44,7 @@ make front-down
 ## Локальный запуск
 
 Нужны Go 1.25.5, Node.js 22, FFmpeg/ffprobe, yt-dlp с EJS и gallery-dl.
-В локальном env укажите `RABBIT_HOST=127.0.0.1`, `DOWNLOAD_DIR=./downloads`, `HTTP_ADDR=:8085`.
+В локальном env укажите `RABBIT_AMQP_URL` с адресом, доступным с вашей машины, `DOWNLOAD_DIR=./downloads`, `HTTP_ADDR=:8085`. Для контейнера адрес в URL должен быть доступен из Docker-сети.
 `make run` экспортирует значения из `.env` и запускает все компоненты; другой env можно выбрать через `ENV_FILE`.
 ```sh
 make deps
