@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"time"
 
 	apperrors "video-downloader/internal/errors"
 	"video-downloader/internal/model"
@@ -32,6 +33,28 @@ func (d *Downloader) Download(ctx context.Context, raw string) (*model.Media, er
 	if err != nil {
 		return nil, err
 	}
+	media, err := d.downloadOnce(ctx, raw, platform, false)
+	if platform != model.Instagram || !instagramEmptyResponse(err) {
+		return media, err
+	}
+	// A fresh yt-dlp process can recover when Instagram returns incomplete
+	// logged-out metadata. Try its supported iOS app ID once before giving up.
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+	}
+	return d.downloadOnce(ctx, raw, platform, true)
+}
+
+func instagramEmptyResponse(err error) bool {
+	var coded interface{ FailureCode() string }
+	return errors.As(err, &coded) && coded.FailureCode() == "instagram_empty_response"
+}
+
+func (d *Downloader) downloadOnce(ctx context.Context, raw string, platform model.Platform, instagramIOS bool) (*model.Media, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -72,8 +95,11 @@ func (d *Downloader) Download(ctx context.Context, raw string) (*model.Media, er
 		}
 	}
 
+	if instagramIOS {
+		args = append(args, "--extractor-args", "instagram:app_id=ios")
+	}
 	args = append(args, "--", raw)
-	err = d.runner.Stream(ctx, output, d.binary, args...)
+	err := d.runner.Stream(ctx, output, d.binary, args...)
 	if output.memoryFull {
 		return nil, apperrors.ErrBusy
 	}

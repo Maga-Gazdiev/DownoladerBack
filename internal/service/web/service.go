@@ -69,8 +69,18 @@ func (s *Service) process(ctx context.Context, id, raw string) {
 		slog.Warn("web download failed", "job_id", id, "reason", downloadFailureCode(err))
 		e.job.Status = "failed"
 		e.job.Error = "Не удалось скачать видео. Проверьте доступность ссылки и попробуйте ещё раз."
+		if downloadFailureCode(err) == "instagram_empty_response" {
+			e.job.Error = "Instagram не отдал данные о видео. Проверьте, открывается ли ссылка без входа в аккаунт."
+		}
 		if errors.Is(err, apperrors.ErrAuthentication) {
-			e.job.Error = "YouTube отклонил анонимный запрос или видео требует входа в аккаунт."
+			switch e.job.Platform {
+			case model.YouTube:
+				e.job.Error = "YouTube отклонил анонимный запрос или видео требует входа в аккаунт."
+			case model.Instagram:
+				e.job.Error = "Instagram требует входа в аккаунт или ограничил доступ к видео."
+			default:
+				e.job.Error = "Платформа требует входа в аккаунт или ограничила доступ к видео."
+			}
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			e.job.Error = "Превышено время скачивания. Попробуйте более короткое видео."

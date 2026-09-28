@@ -15,6 +15,52 @@ type runnerFunc func(context.Context, io.Writer, string, ...string) error
 func (f runnerFunc) Stream(ctx context.Context, w io.Writer, b string, args ...string) error {
 	return f(ctx, w, b, args...)
 }
+
+type codedExtractorError string
+
+func (e codedExtractorError) Error() string       { return string(e) }
+func (e codedExtractorError) FailureCode() string { return string(e) }
+
+func TestInstagramEmptyResponseRetriesWithIOS(t *testing.T) {
+	calls := 0
+	d := New(runnerFunc(func(_ context.Context, w io.Writer, _ string, args ...string) error {
+		calls++
+		ios := strings.Contains(strings.Join(args, " "), "instagram:app_id=ios")
+		if ios != (calls == 2) {
+			t.Errorf("unexpected extractor mode on attempt %d: %v", calls, args)
+		}
+		if _, err := io.WriteString(w, "video"); err != nil {
+			return err
+		}
+		if calls == 1 {
+			return codedExtractorError("instagram_empty_response")
+		}
+		return nil
+	}), "yt-dlp", "", 5, 5)
+	media, err := d.Download(context.Background(), "https://www.instagram.com/reel/test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer media.Close()
+	if calls != 2 || media.Size() != 5 {
+		t.Fatalf("retry did not return the expected video: calls=%d size=%d", calls, media.Size())
+	}
+}
+
+func TestInstagramAuthenticationDoesNotRetry(t *testing.T) {
+	calls := 0
+	d := New(runnerFunc(func(context.Context, io.Writer, string, ...string) error {
+		calls++
+		return apperrors.ErrAuthentication
+	}), "yt-dlp", "", 5, 5)
+	if _, err := d.Download(context.Background(), "https://www.instagram.com/reel/test/"); !errors.Is(err, apperrors.ErrAuthentication) {
+		t.Fatalf("authentication failure = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("authentication error retried %d times", calls)
+	}
+}
+
 func TestMemoryRemainsReservedForOpenReaders(t *testing.T) {
 	d := New(runnerFunc(func(_ context.Context, w io.Writer, _ string, _ ...string) error {
 		_, err := w.Write([]byte("video"))

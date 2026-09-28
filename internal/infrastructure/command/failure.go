@@ -38,6 +38,8 @@ func failure(binary string, cause error, stderr []byte) error {
 func failureCode(stderr []byte) string {
 	message := strings.ToLower(string(stderr))
 	switch {
+	case strings.Contains(message, "instagram sent an empty media response"):
+		return "instagram_empty_response"
 	case strings.Contains(message, "sign in to confirm"),
 		strings.Contains(message, "login required"),
 		strings.Contains(message, "use --cookies"):

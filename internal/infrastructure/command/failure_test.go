@@ -13,6 +13,7 @@ func TestFailureCode(t *testing.T) {
 	tests := []struct {
 		name, stderr, want string
 	}{
+		{"instagram empty with login hint", "Instagram sent an empty media response. If it is not accessible, use --cookies", "instagram_empty_response"},
 		{"forbidden", "HTTP Error 403: Forbidden", "http_403"},
 		{"rate limit", "HTTP Error 429: Too Many Requests", "rate_limited"},
 		{"disk", "No space left on device", "disk_full"},
