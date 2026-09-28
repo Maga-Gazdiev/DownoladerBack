@@ -35,23 +35,30 @@ func (d *Downloader) Download(ctx context.Context, raw string) (*model.Media, er
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	d.mu.Lock()
-	if d.memoryBytes-d.used < d.maxBytes {
-		d.mu.Unlock()
-		return nil, apperrors.ErrBusy
+	reserve := func(n int64) bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if n < 0 || d.memoryBytes-d.used < n {
+			return false
+		}
+		d.used += n
+		return true
 	}
-	d.used += d.maxBytes
-	d.mu.Unlock()
-	release := func() { d.mu.Lock(); d.used -= d.maxBytes; d.mu.Unlock() }
+	releaseBytes := func(n int64) {
+		d.mu.Lock()
+		d.used -= n
+		d.mu.Unlock()
+	}
 	success := false
+	var output *buffer
 	defer func() {
-		if !success {
-			release()
+		if !success && output != nil && output.reserved > 0 {
+			releaseBytes(output.reserved)
 		}
 	}()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	output := &buffer{limit: d.maxBytes, cancel: cancel}
+	output = &buffer{limit: d.maxBytes, cancel: cancel, reserve: reserve, release: releaseBytes}
 	// FFmpeg reads media URLs and writes fragmented MP4 to stdout. Restrict
 	// protocols to those it can stream directly, without native fragment files.
 	protocol := "[protocol~='^(https?|m3u8(_native)?)$']"
@@ -67,6 +74,9 @@ func (d *Downloader) Download(ctx context.Context, raw string) (*model.Media, er
 
 	args = append(args, "--", raw)
 	err = d.runner.Stream(ctx, output, d.binary, args...)
+	if output.memoryFull {
+		return nil, apperrors.ErrBusy
+	}
 	if output.overflow {
 		return nil, ErrTooLarge
 	}
@@ -82,15 +92,21 @@ func (d *Downloader) Download(ctx context.Context, raw string) (*model.Media, er
 	hash := sha256.Sum256(output.data)
 	id := hex.EncodeToString(hash[:])
 	success = true
+	var once sync.Once
+	release := func() { once.Do(func() { releaseBytes(output.reserved) }) }
 	return model.NewMedia(model.File{Hash: id, Name: id + ".mp4"}, output.data, release), nil
 }
 
-// Allocate at most one reserved buffer, without geometric growth or copies.
+// Grow the output buffer with the media, reserving only the capacity it uses.
 type buffer struct {
-	data     []byte
-	limit    int64
-	cancel   context.CancelFunc
-	overflow bool
+	data       []byte
+	limit      int64
+	cancel     context.CancelFunc
+	overflow   bool
+	memoryFull bool
+	reserved   int64
+	reserve    func(int64) bool
+	release    func(int64)
 }
 
 func (b *buffer) Write(p []byte) (int, error) {
@@ -99,8 +115,25 @@ func (b *buffer) Write(p []byte) (int, error) {
 		b.cancel()
 		return 0, ErrTooLarge
 	}
-	if b.data == nil {
-		b.data = make([]byte, 0, int(b.limit))
+	needed := len(b.data) + len(p)
+	if needed > cap(b.data) {
+		newCap := cap(b.data) * 2
+		if newCap < needed {
+			newCap = needed
+		}
+		if int64(newCap) > b.limit {
+			newCap = int(b.limit)
+		}
+		delta := int64(newCap - cap(b.data))
+		if !b.reserve(delta) {
+			b.memoryFull = true
+			b.cancel()
+			return 0, apperrors.ErrBusy
+		}
+		grown := make([]byte, len(b.data), newCap)
+		copy(grown, b.data)
+		b.data = grown
+		b.reserved += delta
 	}
 	b.data = append(b.data, p...)
 	return len(p), nil

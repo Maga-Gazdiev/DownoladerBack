@@ -45,6 +45,59 @@ func TestMemoryRemainsReservedForOpenReaders(t *testing.T) {
 	}
 	media.Close()
 }
+
+func TestMemoryReservationGrowsWithDownloadedMedia(t *testing.T) {
+	d := New(runnerFunc(func(_ context.Context, w io.Writer, _ string, _ ...string) error {
+		_, err := w.Write([]byte("video"))
+		return err
+	}), "yt-dlp", "", 100, 20)
+	media := make([]interface{ Close() }, 0, 4)
+	for range 4 {
+		m, err := d.Download(context.Background(), "https://youtu.be/test")
+		if err != nil {
+			t.Fatalf("small video did not fit in memory budget: %v", err)
+		}
+		media = append(media, m)
+	}
+	if _, err := d.Download(context.Background(), "https://youtu.be/test"); !errors.Is(err, apperrors.ErrBusy) {
+		t.Fatalf("expected memory limit after 20 reserved bytes, got %v", err)
+	}
+	media[0].Close()
+	m, err := d.Download(context.Background(), "https://youtu.be/test")
+	if err != nil {
+		t.Fatalf("reservation was not released with media: %v", err)
+	}
+	m.Close()
+	for _, m := range media[1:] {
+		m.Close()
+	}
+}
+
+func TestMemoryReservationFailureReleasesPartialBuffer(t *testing.T) {
+	calls := 0
+	d := New(runnerFunc(func(ctx context.Context, w io.Writer, _ string, _ ...string) error {
+		calls++
+		if calls == 1 {
+			_, _ = w.Write([]byte("12345678"))
+			_, err := w.Write([]byte("more"))
+			if !errors.Is(err, apperrors.ErrBusy) || ctx.Err() == nil {
+				t.Errorf("expected memory exhaustion to cancel download: %v %v", err, ctx.Err())
+			}
+			return ctx.Err()
+		}
+		_, err := w.Write([]byte("ok"))
+		return err
+	}), "yt-dlp", "", 16, 8)
+	if _, err := d.Download(context.Background(), "https://youtu.be/test"); !errors.Is(err, apperrors.ErrBusy) {
+		t.Fatalf("expected memory exhaustion, got %v", err)
+	}
+	m, err := d.Download(context.Background(), "https://youtu.be/test")
+	if err != nil {
+		t.Fatalf("partial reservation leaked: %v", err)
+	}
+	m.Close()
+}
+
 func TestOverflowCancelsProcessAndReleasesReservation(t *testing.T) {
 	calls := 0
 	d := New(runnerFunc(func(ctx context.Context, w io.Writer, _ string, _ ...string) error {
